@@ -403,106 +403,21 @@ def run_inference(img_model, tab_proj, fusion, xgb_clf, scaler,
 # SOIL IMAGE VALIDATOR
 # ══════════════════════════════════════════════════════════════
 
-def is_soil_image(pil_image):
-    """Ultra-strict soil validator — rejects screenshots, gaming images,
-    people, sky, grass, food, and any non-soil photo."""
-    img = pil_image.resize((200, 200)).convert("RGB")
-    arr = np.array(img).astype(float)
-
-    r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
-    r_mean, g_mean, b_mean = r.mean(), g.mean(), b.mean()
-    brightness = (r_mean + g_mean + b_mean) / 3
-    total_pixels = 200 * 200
-
-    # ── 1. Reject dark/gaming screenshots ─────────────────────
-    very_dark = np.sum((r < 40) & (g < 40) & (b < 40)) / total_pixels
-    if very_dark > 0.25:
-        return False, ("Image appears to be a dark screenshot or gaming image. "
-                       "Please upload a real soil photo.")
-
-    # ── 2. Reject neon/vivid colors (UI/screenshots) ──────────
-    neon_red    = np.sum((r > 200) & (g < 80)  & (b < 80))  / total_pixels
-    neon_blue   = np.sum((b > 200) & (r < 80)  & (g < 80))  / total_pixels
-    neon_green  = np.sum((g > 200) & (r < 80)  & (b < 80))  / total_pixels
-    neon_orange = np.sum((r > 220) & (g > 100) & (g < 160) & (b < 60)) / total_pixels
-    neon_cyan   = np.sum((b > 180) & (g > 180) & (r < 80))  / total_pixels
-    if (neon_red + neon_blue + neon_green + neon_orange + neon_cyan) > 0.04:
-        return False, ("Bright neon colors detected. This looks like a screenshot "
-                       "or digital image. Please upload a real soil photograph.")
-
-    # ── 3. Reject skin tones / people ─────────────────────────
-    px_bright = (r + g + b) / 3
-    skin = np.sum(
-        (r > 140) & (g > 90) & (b > 70) &
-        (r > g) & (g > b) &
-        (px_bright > 100) & (px_bright < 220) &
-        ((r - b) < 130)
-    ) / total_pixels
-    if skin > 0.12:
-        return False, ("Person or skin tone detected. "
-                       "Please upload only soil photos without people.")
-
-    # ── 4. Reject blue sky / water ─────────────────────────────
-    blue_dom = np.sum((b > r + 20) & (b > g + 10) & (b > 100)) / total_pixels
-    if blue_dom > 0.25:
-        return False, ("Sky or water detected. "
-                       "Please upload a close-up photo of soil only.")
-
-    # ── 5. Reject vivid green (grass/plants) ──────────────────
-    vivid_green = np.sum((g > r + 25) & (g > b + 25) & (g > 80)) / total_pixels
-    if vivid_green > 0.25:
-        return False, ("Plants or grass detected. "
-                       "Please upload a close-up soil photo without vegetation.")
-
-    # ── 6. Reject too bright ───────────────────────────────────
-    if brightness > 190:
-        return False, ("Image is too bright. Soil images are typically darker. "
-                       "Please upload a clear close-up soil photo.")
-
-    # ── 7. Reject high color saturation ───────────────────────
-    sat = (np.maximum(np.maximum(r, g), b) -
-           np.minimum(np.minimum(r, g), b))
-    high_sat_px = np.sum(sat > 120) / total_pixels
-    if sat.mean() > 80 or high_sat_px > 0.35:
-        return False, ("Image has too many vivid colors. Real soil photos have "
-                       "natural earthy tones. Please upload an actual soil photo.")
-
-    # ── 8. Reject UI/text (high structured row variance) ──────
-    row_vars = [np.var(arr[i, :, :]) for i in range(0, 200, 10)]
-    if np.mean(row_vars) > 4500:
-        return False, ("Image appears to contain text or UI elements. "
-                       "Please upload a plain soil photograph.")
-
-    # ── Positive soil score (need ≥ 3/5) ──────────────────────
-    score = 0
-
-    earthy = np.sum(
-        (r > 60) & (r >= g) & (g >= b) &
-        (px_bright < 180) & (px_bright > 20)
-    ) / total_pixels
-    if earthy > 0.30:
-        score += 1
-
-    dark_px = np.sum((r < 130) & (g < 130) & (b < 130) & (px_bright > 15)) / total_pixels
-    if dark_px > 0.35:
-        score += 1
-
-    if b_mean < 100:
-        score += 1
-
-    overall_var = np.var(arr)
-    if 200 < overall_var < 3500:
-        score += 1
-
-    if r_mean >= g_mean and g_mean >= b_mean * 0.85:
-        score += 1
-
-    if score < 3:
-        return False, (f"Image does not look like soil (score: {score}/5). "
-                       f"Please upload a clear close-up photograph of bare soil. "
-                       f"Good examples: red soil, black soil, clay soil, sandy soil.")
-
-    return True, "Valid soil image"
+def is_soil_image(pil_img, img_model, transform):
+    """Use the trained ResNet-50 to validate soil images.
+    If the model is confident (>=40%) about any soil class → valid.
+    Low confidence across all classes → not a soil image.
+    """
+    import torch
+    img_t = transform(pil_img).unsqueeze(0)
+    with torch.no_grad():
+        feat  = img_model(img_t, return_features=False)
+        probs = torch.softmax(feat, dim=-1)[0]
+    top_confidence = probs.max().item() * 100
+    if top_confidence >= 40.0:
+        return True, "Valid soil image"
+    else:
+        return False, top_confidence
 
 
 # ══════════════════════════════════════════════════════════════
@@ -679,21 +594,40 @@ with right:
         st.error("Please upload a soil image before analyzing.")
 
     else:
-        # ── Soil image validation ──────────────────────────────
+        # ── Soil image validation (ResNet-50 based) ───────────
+        _eval_tf = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406],
+                                  [0.229, 0.224, 0.225]),
+        ])
         _pil_check = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        _valid, _msg = is_soil_image(_pil_check)
+        _valid, _result = is_soil_image(_pil_check, img_model, _eval_tf)
         if not _valid:
+            _conf_shown = float(_result)
             st.markdown(f"""
             <div style="background:#FFEBEE; border-left:4px solid #C62828;
-            border-radius:12px; padding:20px; margin:16px 0">
-              <h3 style="color:#C62828; margin:0 0 8px 0">❌ Invalid Image</h3>
-              <p style="color:#B71C1C; margin:0 0 12px 0">{_msg}</p>
-              <p style="color:#555; margin:0; font-size:13px">
-                <strong>Valid soil images look like:</strong><br>
-                • Close-up photos of bare soil<br>
-                • Soil in hands (mostly soil visible, not skin)<br>
-                • Soil samples in containers<br>
-                • Agricultural field soil close-ups
+            border-radius:12px; padding:24px; margin:16px 0">
+              <h3 style="color:#C62828; margin:0 0 8px 0">❌ No Soil Detected</h3>
+              <p style="color:#B71C1C; margin:0 0 16px 0; font-size:16px">
+              The uploaded image does not appear to be a soil photograph.
+              Our model could not identify any known soil type with
+              sufficient confidence.</p>
+              <div style="background:#FFCDD2; border-radius:8px;
+              padding:12px; margin-bottom:12px">
+                <p style="margin:0; color:#7F0000; font-size:14px">
+                Model confidence: {_conf_shown:.1f}%
+                (minimum required: 40%)
+                </p>
+              </div>
+              <p style="color:#555; margin:0; font-size:14px">
+                <strong>Please upload:</strong><br>
+                • Clear close-up photo of bare soil<br>
+                • Soil held in hands (soil must be majority of image)<br>
+                • Soil sample in a container or tray<br>
+                • Agricultural field soil close-up<br>
+                • Any of the 6 types: Red, Black, Alluvial,
+                  Clay, Laterite, Yellow soil
               </p>
             </div>
             """, unsafe_allow_html=True)
