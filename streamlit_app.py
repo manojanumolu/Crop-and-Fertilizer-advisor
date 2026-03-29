@@ -18,41 +18,66 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ── Global CSS ─────────────────────────────────────────────────
-st.markdown("""
+# ── Theme state ────────────────────────────────────────────────
+if "theme" not in st.session_state:
+    st.session_state.theme = "light"
+
+# ── Theme CSS definitions ───────────────────────────────────────
+_BASE_CSS = """
 <style>
   #MainMenu, footer, header { visibility: hidden; }
-
-  .main { background: #F9FBF9; }
   .block-container { padding: 0 2rem 2rem; max-width: 1200px; }
   h1, h2, h3, h4 { font-family: 'Segoe UI', sans-serif; }
-
-  .stSelectbox label, .stNumberInput label {
-    color: #1B5E20 !important; font-weight: 500;
-  }
-  div[data-testid="stFileUploader"] {
-    border: 2px dashed #2E7D32;
-    border-radius: 12px;
-    background: #F1F8E9;
-    padding: 8px;
-  }
-
   div.stButton > button {
-    background: #2E7D32;
-    color: white;
-    border: none;
-    padding: 14px 48px;
-    font-size: 18px;
-    font-weight: 600;
-    border-radius: 30px;
-    width: 100%;
-    cursor: pointer;
-    margin-top: 16px;
-    transition: background 0.2s;
+    background: #2E7D32; color: white; border: none;
+    padding: 14px 48px; font-size: 18px; font-weight: 600;
+    border-radius: 30px; width: 100%; cursor: pointer;
+    margin-top: 16px; transition: background 0.2s;
   }
   div.stButton > button:hover { background: #1B5E20; }
 </style>
-""", unsafe_allow_html=True)
+"""
+
+LIGHT_THEME = _BASE_CSS + """
+<style>
+  :root { --card-bg: #FFFFFF; --card-border: #E8F5E9; --text: #212121;
+          --subtext: #555; --page-bg: #F9FBF9; --section-bg: #E8F5E9;
+          --prob-track: #f0f0f0; --prob-label: #333; --fert-bg: #FFF8E1; }
+  .main, .stApp { background: #F9FBF9 !important; }
+  h1,h2,h3,h4,p { color: #212121; }
+  .stSelectbox label, .stNumberInput label { color: #1B5E20 !important; font-weight: 500; }
+  div[data-testid="stFileUploader"] {
+    border: 2px dashed #2E7D32; border-radius: 12px;
+    background: #F1F8E9; padding: 8px;
+  }
+</style>
+"""
+
+DARK_THEME = _BASE_CSS + """
+<style>
+  :root { --card-bg: #1E1E1E; --card-border: #2E2E2E; --text: #FFFFFF;
+          --subtext: #AAAAAA; --page-bg: #121212; --section-bg: #1A2A1A;
+          --prob-track: #2C2C2C; --prob-label: #CCCCCC; --fert-bg: #2A2000; }
+  .main, .stApp { background: #121212 !important; }
+  h1,h2,h3,h4,p,label,span { color: #FFFFFF !important; }
+  .stSelectbox label, .stNumberInput label { color: #81C784 !important; font-weight: 500; }
+  div[data-testid="stFileUploader"] {
+    border: 2px dashed #4CAF50; border-radius: 12px;
+    background: #1A2A1A; padding: 8px;
+  }
+  div[data-testid="stNumberInput"] input,
+  .stTextInput input { background: #2C2C2C !important; color: #FFFFFF !important; }
+  .stSelectbox > div > div { background: #2C2C2C !important; color: #FFFFFF !important; }
+  div[data-testid="stExpander"] { background: #1E1E1E !important; }
+  .stSlider { filter: brightness(1.4); }
+</style>
+"""
+
+# Apply theme
+if st.session_state.theme == "dark":
+    st.markdown(DARK_THEME, unsafe_allow_html=True)
+else:
+    st.markdown(LIGHT_THEME, unsafe_allow_html=True)
 
 # ── Paths ──────────────────────────────────────────────────────
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -365,6 +390,48 @@ def run_inference(img_model, tab_proj, fusion, xgb_clf, scaler,
 
 
 # ══════════════════════════════════════════════════════════════
+# SOIL IMAGE VALIDATOR
+# ══════════════════════════════════════════════════════════════
+
+def is_soil_image(pil_image):
+    """Check if image is likely a soil image by analyzing color distribution."""
+    img = pil_image.resize((100, 100))
+    img_array = np.array(img.convert("RGB"))
+
+    r = float(img_array[:, :, 0].mean())
+    g = float(img_array[:, :, 1].mean())
+    b = float(img_array[:, :, 2].mean())
+
+    total = r + g + b + 1e-6
+    r_ratio = r / total
+    g_ratio = g / total
+    b_ratio = b / total
+    brightness = (r + g + b) / 3
+
+    is_too_bright  = brightness > 200
+    is_too_blue    = b_ratio > 0.38
+    is_too_green   = g_ratio > 0.42
+    is_skin_tone   = (r > 150 and g > 100 and b > 80
+                      and r > g > b and brightness > 130)
+    is_too_colorful = (abs(r - g) + abs(g - b) + abs(r - b)) > 200
+
+    is_earthy = (r_ratio >= 0.30 and b_ratio <= 0.35 and brightness < 180)
+
+    if is_too_blue:
+        return False, "Image appears to contain sky or water (too blue)"
+    if is_too_green:
+        return False, "Image appears to contain grass or vegetation (too green)"
+    if is_skin_tone:
+        return False, "Image appears to contain a person or skin tones"
+    if is_too_bright:
+        return False, "Image is too bright — please use a close-up soil photo"
+    if not is_earthy:
+        return False, "Image colors don't match typical soil patterns (expected earthy browns/reds)"
+
+    return True, "Valid soil image"
+
+
+# ══════════════════════════════════════════════════════════════
 # UI CONSTANTS
 # ══════════════════════════════════════════════════════════════
 
@@ -398,16 +465,24 @@ CROP_ICONS = {
 # UI
 # ══════════════════════════════════════════════════════════════
 
-# ── Header ─────────────────────────────────────────────────────
-st.markdown("""
-<div style="background:#1B5E20; color:white; padding:2rem 2.5rem;
-border-radius:16px; margin-bottom:2rem; text-align:center">
-  <h1 style="margin:0; font-size:2rem; font-weight:800; letter-spacing:-0.5px">
-    🌱 Multimodal Crop &amp; Fertilizer Recommendation</h1>
-  <p style="margin:0.5rem 0 0; font-size:1rem; opacity:0.85">
-    AI-powered soil analysis for smarter farming</p>
-</div>
-""", unsafe_allow_html=True)
+# ── Header + theme toggle ───────────────────────────────────────
+_hcol1, _hcol2 = st.columns([8, 1])
+with _hcol1:
+    st.markdown("""
+    <div style="background:#1B5E20; color:white; padding:1.5rem 2rem;
+    border-radius:16px; margin-bottom:1rem; text-align:center">
+      <h1 style="margin:0; font-size:1.8rem; font-weight:800; letter-spacing:-0.5px; color:white !important">
+        🌱 Multimodal Crop &amp; Fertilizer Recommendation</h1>
+      <p style="margin:0.4rem 0 0; font-size:0.95rem; opacity:0.85; color:white !important">
+        AI-powered soil analysis for smarter farming</p>
+    </div>
+    """, unsafe_allow_html=True)
+with _hcol2:
+    st.markdown("<div style='padding-top:12px'></div>", unsafe_allow_html=True)
+    _btn_label = "🌙 Dark" if st.session_state.theme == "light" else "☀️ Light"
+    if st.button(_btn_label, key="theme_toggle"):
+        st.session_state.theme = "dark" if st.session_state.theme == "light" else "light"
+        st.rerun()
 
 # ── Load models ────────────────────────────────────────────────
 try:
@@ -444,6 +519,8 @@ with left:
         type=["jpg", "jpeg", "png"],
         label_visibility="collapsed",
     )
+    st.info("💡 Tip: Upload a clear close-up photo of soil for best results. "
+            "Avoid photos with people, plants, or bright objects.")
     img_bytes = uploaded.read() if uploaded else None
     if img_bytes:
         st.image(io.BytesIO(img_bytes), use_container_width=True)
@@ -516,7 +593,7 @@ with right:
         st.markdown("""
         <div style="text-align:center; padding:5rem 2rem;
         color:#9E9E9E; border:2px dashed #C8E6C9; border-radius:16px;
-        background:#FAFFFE">
+        background:var(--card-bg,#FAFFFE)">
           <div style="font-size:3rem; margin-bottom:1rem">🌱</div>
           <p style="font-size:1.05rem; color:#555; margin:0">
             <strong>Upload a soil image</strong> and fill in the parameters,<br>
@@ -528,6 +605,16 @@ with right:
         st.error("Please upload a soil image before analyzing.")
 
     else:
+        # ── Soil image validation ──────────────────────────────
+        _pil_check = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        _valid, _msg = is_soil_image(_pil_check)
+        if not _valid:
+            st.error(f"❌ **Invalid Image Detected!**\n\n{_msg}\n\n"
+                     "Please upload a clear photo of soil.\n"
+                     "Accepted: Red soil, Black soil, Clay soil, "
+                     "Sandy soil, Alluvial soil photos.")
+            st.stop()
+
         with st.spinner("Running AI inference…"):
             try:
                 soil_name, confidence, all_probs, soil_fert, crop_recs, dbg = run_inference(
@@ -568,8 +655,8 @@ with right:
                     <div style="display:flex; align-items:center;
                     margin:6px 0; gap:10px">
                       <span style="width:110px; font-size:13px;
-                      color:#333; flex-shrink:0">{soil}</span>
-                      <div style="flex:1; background:#f0f0f0;
+                      color:var(--prob-label,#333); flex-shrink:0">{soil}</span>
+                      <div style="flex:1; background:var(--prob-track,#f0f0f0);
                       border-radius:6px; height:12px">
                         <div style="width:{prob}%; background:{bar_color};
                         height:12px; border-radius:6px"></div>
@@ -592,7 +679,7 @@ with right:
                     icon  = CROP_ICONS.get(crop["name"], "🌱")
                     stars = "⭐" * crop["stars"]
                     st.markdown(f"""
-                    <div style="background:white; border:1px solid #C8E6C9;
+                    <div style="background:var(--card-bg,white); border:1px solid var(--card-border,#C8E6C9);
                     border-radius:12px; padding:16px; margin:8px 0;
                     border-left:4px solid #2E7D32">
                       <div style="display:flex; align-items:center; gap:12px">
@@ -612,7 +699,7 @@ with right:
 
                 # ── Soil fertilizer card ───────────────────────
                 st.markdown(f"""
-                <div style="background:#FFF8E1; border-radius:12px;
+                <div style="background:var(--fert-bg,#FFF8E1); border-radius:12px;
                 padding:20px; border-left:4px solid #FF8F00; margin-top:16px">
                   <h4 style="color:#E65100; margin:0 0 12px 0">
                   🧴 Fertilizer Recommendation</h4>
