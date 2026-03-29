@@ -1,16 +1,6 @@
 # Claude internal files
 .claude/
 
-# Model files — large and sensitive, keep local only
-*.pt
-*.pth
-*.pkl
-*.h5
-*.joblib
-xgb_model.json
-model_config.json
-class_names.json
-
 # Python cache
 __pycache__/
 *.pyc
@@ -19,7 +9,6 @@ __pycache__/
 # Virtual environments
 venv/
 .env
-.env/
 
 # Jupyter checkpoints
 .ipynb_checkpoints/

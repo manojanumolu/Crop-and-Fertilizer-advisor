@@ -1,0 +1,28 @@
+{
+  "IMG_FEAT_DIM": 512,
+  "XGB_PROJ_DIM": 256,
+  "FUSED_DIM": 512,
+  "NUM_HEADS": 8,
+  "NUM_CLASSES": 6,
+  "TAB_FEAT_DIM": 19,
+  "NUMERIC_COLS": [
+    "Nitrogen",
+    "Phosphorus",
+    "Potassium",
+    "Temperature",
+    "Humidity",
+    "Rainfall",
+    "Soil_pH",
+    "Yield_Last_Season",
+    "Fertilizer_Used_Last_Season"
+  ],
+  "CLASS_NAMES": [
+    "Alluvial Soil",
+    "Black Soil",
+    "Clay Soil",
+    "Laterite Soil",
+    "Red Soil",
+    "Yellow Soil"
+  ],
+  "IMG_SIZE": 224
+}
