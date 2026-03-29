@@ -388,10 +388,10 @@ def run_inference(img_model, tab_proj, fusion, xgb_clf, scaler,
     num_sc      = scaler.transform(pd.DataFrame(num_raw, columns=num_cols))
     cat_enc     = np.array([[SEASON_MAP[season], IRRIG_MAP[irrig],
                               PREV_MAP[prev],     REGION_MAP[region]]])
-    scaled_feat = np.concatenate([num_sc, cat_enc], axis=1).astype(np.float32)
+    xgb_input = np.concatenate([num_sc, cat_enc], axis=1).astype(np.float32)
 
-    xgb_probs = xgb_clf.predict_proba(scaled_feat)                    # (1, 6)
-    tab_raw   = np.concatenate([xgb_probs, scaled_feat], axis=1).astype(np.float32)
+    xgb_probs = xgb_clf.predict_proba(xgb_input)                      # (1, 6)
+    tab_raw   = np.concatenate([xgb_probs, xgb_input], axis=1).astype(np.float32)
     tab_t     = torch.tensor(tab_raw, dtype=torch.float32)             # (1, 19)
 
     # ── Inference — explicit eval() + no_grad every call ──────
@@ -401,40 +401,18 @@ def run_inference(img_model, tab_proj, fusion, xgb_clf, scaler,
         tab_feat  = tab_proj(tab_t)
         logits, _ = fusion(img_feat, tab_feat)
 
-    # Debug values — exposed so callers can verify image features vary per image
-    debug = {
-        "logits":         logits[0].cpu().tolist(),
-        "img_feat_mean":  round(img_feat.mean().item(), 6),
-        "img_feat_std":   round(img_feat.std().item(),  6),
-        "img_shape":      list(img_t.shape),
-        "img_pixel_mean": round(img_t.mean().item(), 4),
-    }
-
-    fusion_probs = torch.softmax(logits, dim=-1)[0].cpu().numpy()      # (6,)
-
-    # ── Calibrated ensemble: blend fusion + XGBoost ──
-    xgb_p  = xgb_probs[0]
-    top2   = np.partition(fusion_probs, -2)[-2:]
-    gap    = float(top2[-1] - top2[-2])
-    xgb_w  = 0.45 if gap < 0.20 else 0.30
-    blended = (1 - xgb_w) * fusion_probs + xgb_w * xgb_p
-
-    # Red <-> Yellow calibration via pH + K
-    RED_IDX    = class_names.index("Red Soil")
-    YELLOW_IDX = class_names.index("Yellow Soil")
-    if blended[RED_IDX] > 0.30 or blended[YELLOW_IDX] > 0.30:
-        ph_score     = max(0.0, (6.5 - ph) / 6.5)
-        k_score      = max(0.0, (50.0 - k) / 50.0)
-        yellow_boost = 0.12 * (ph_score + k_score) / 2.0
-        blended[YELLOW_IDX] = min(1.0, blended[YELLOW_IDX] + yellow_boost)
-        blended[RED_IDX]    = max(0.0, blended[RED_IDX]    - yellow_boost)
-        blended = blended / blended.sum()
-
-    pred_idx   = int(np.argmax(blended))
+    # Clean prediction — raw softmax only, no blending or manipulation
+    probs      = torch.softmax(logits, dim=-1)[0].cpu().numpy()        # (6,)
+    pred_idx   = int(np.argmax(probs))
     soil_name  = class_names[pred_idx]
-    confidence = round(float(blended[pred_idx]) * 100, 1)
-    all_probs  = {class_names[i]: round(float(blended[i]) * 100, 1)
+    confidence = round(float(probs[pred_idx]) * 100, 2)
+    all_probs  = {class_names[i]: round(float(probs[i]) * 100, 2)
                   for i in range(len(class_names))}
+
+    debug = {
+        "probs":        {class_names[i]: round(float(probs[i]) * 100, 2) for i in range(len(class_names))},
+        "img_feat_std": round(img_feat.std().item(), 4),
+    }
 
     soil_fert = SOIL_FERT_MAP.get(soil_name,
                 {"fertilizer": "NPK 14:14:14", "npk": "N:P:K = 60:30:30 kg/ha"})
@@ -605,24 +583,9 @@ with right:
                 """, unsafe_allow_html=True)
 
                 # ── Debug expander ─────────────────────────────
-                # img_feat_mean and img_feat_std MUST differ across
-                # images — if they are identical, the image model is
-                # not loading correctly (LFS pointer vs real file).
-                with st.expander("Debug Info"):
-                    st.write("**Model file sizes at startup:**")
-                    for fn, info in _file_status.items():
-                        st.write(f"- `{fn}`: {info['mb']:.1f} MB")
-                    st.write("---")
-                    st.write("**Raw logits:**",
-                             [round(v, 4) for v in dbg["logits"]])
-                    st.write("**Image feature mean:**", dbg["img_feat_mean"],
-                             "  std:", dbg["img_feat_std"])
-                    st.write("**Image tensor shape:**", dbg["img_shape"],
-                             "  pixel mean:", dbg["img_pixel_mean"])
-                    st.caption(
-                        "If img_feat_mean / std are identical for every image, "
-                        "the image model is not working — check LFS file sizes above."
-                    )
+                with st.expander("Prediction Debug"):
+                    st.write("Raw probs:", dbg["probs"])
+                    st.write("Image feat std:", dbg["img_feat_std"])
 
             except Exception as e:
                 st.error(f"Prediction failed: {e}")
