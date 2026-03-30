@@ -503,39 +503,68 @@ INDIA_STATES_DISTRICTS = {
 
 def get_climate_data(village, district, state):
     try:
-        queries = []
-        if village:
-            queries.append(f"{village} {district} {state} India")
-            queries.append(f"{village} {state} India")
-        queries.append(f"{district} {state} India")
-        queries.append(f"{district} India")
+        search_attempts = []
+        if village and village.strip():
+            search_attempts.append(village.strip())
+            search_attempts.append(f"{village.strip()} {district}")
+        search_attempts.append(district)
+        search_attempts.append(f"{district} {state}")
+        search_attempts.append(state)
 
         matched = None
-        for query in queries:
-            geo_url = (
-                "https://geocoding-api.open-meteo.com"
-                "/v1/search"
-                f"?name={requests.utils.quote(query)}"
-                "&count=5&language=en&format=json"
-            )
-            geo_resp = requests.get(geo_url, timeout=10)
-            geo_data = geo_resp.json()
-            india_results = [
-                r for r in geo_data.get("results", [])
-                if r.get("country_code", "").upper() == "IN"
-            ]
-            if india_results:
-                matched = india_results[0]
-                break
+        matched_query = ""
+
+        for query in search_attempts:
+            try:
+                geo_url = (
+                    "https://geocoding-api.open-meteo.com"
+                    "/v1/search"
+                    f"?name={requests.utils.quote(query)}"
+                    "&count=10&language=en&format=json"
+                )
+                geo_resp = requests.get(geo_url, timeout=10)
+                geo_data = geo_resp.json()
+                results = geo_data.get("results", [])
+
+                india_results = [
+                    r for r in results
+                    if r.get("country_code", "").upper() == "IN"
+                ]
+                if not india_results:
+                    continue
+
+                state_matched = [
+                    r for r in india_results
+                    if state.lower() in r.get("admin1", "").lower()
+                ]
+                if state_matched:
+                    matched = state_matched[0]
+                    matched_query = query
+                    break
+                else:
+                    matched = india_results[0]
+                    matched_query = query
+                    break
+            except Exception:
+                continue
 
         if not matched:
-            return None, f"Could not find {district}, {state}. Please check spelling."
+            return None, "Location not found. Please try just the district name."
 
-        lat        = matched["latitude"]
-        lon        = matched["longitude"]
-        found_name = matched.get("name", village or district)
-        found_state= matched.get("admin1", state)
-        full_location = f"{found_name}, {found_state}, India"
+        lat = matched["latitude"]
+        lon = matched["longitude"]
+
+        v = village.strip() if village and village.strip() else ""
+        if matched_query == v:
+            location_label = f"{v}, {district}, {state}"
+            note = "Village found ✓"
+        elif matched_query in (district, f"{district} {state}"):
+            location_label = f"{district}, {state}"
+            note = (f"Village '{v}' not in database — using {district} district data"
+                    if v else f"Using {district} district data")
+        else:
+            location_label = f"{state}, India"
+            note = f"Using {state} state data"
 
         climate_url = (
             "https://archive-api.open-meteo.com"
@@ -558,18 +587,16 @@ def get_climate_data(village, district, state):
 
         avg_temp    = round(sum(temps) / len(temps), 1) if temps else 25.0
         avg_hum     = round(sum(hums) / len(hums), 1) if hums else 60.0
-        years       = len(rains) / 365
-        annual_rain = round(sum(rains) / years, 1) if years > 0 else 1000.0
+        annual_rain = round(sum(rains) / (len(rains) / 365), 1) if rains else 1000.0
 
         return {
-            "location":    full_location,
+            "location":    location_label,
+            "note":        note,
             "temperature": avg_temp,
             "humidity":    avg_hum,
             "rainfall":    annual_rain,
         }, None
 
-    except requests.exceptions.Timeout:
-        return None, "Timed out. Please try again."
     except Exception as e:
         return None, f"Error: {str(e)}"
 
@@ -653,6 +680,8 @@ if "auto_rain" not in st.session_state:
     st.session_state.auto_rain = 1619.0
 if "location_name" not in st.session_state:
     st.session_state.location_name = ""
+if "location_note" not in st.session_state:
+    st.session_state.location_note = ""
 
 left, right = st.columns([1, 1], gap="large")
 
@@ -753,7 +782,11 @@ with left:
                 st.session_state.auto_hum  = climate["humidity"]
                 st.session_state.auto_rain = climate["rainfall"]
                 st.session_state.location_name = climate["location"]
-                st.success("✅ Climate data loaded!")
+                st.session_state.location_note = climate.get("note", "")
+                st.success(
+                    f"✅ {climate['location']} — "
+                    f"{climate.get('note', 'Data loaded')}"
+                )
                 st.rerun()
 
     if st.session_state.location_name:
@@ -762,13 +795,16 @@ with left:
         margin:8px 0; border:1px solid #C8E6C9">
         <p style="margin:0; font-size:13px; color:#1B5E20">
         <strong>📍 {st.session_state.location_name}</strong></p>
-        <p style="margin:4px 0 0 0; font-size:13px; color:#555">
-        🌡️ <strong>{st.session_state.auto_temp}°C</strong> avg temp &nbsp;|&nbsp;
-        💧 <strong>{st.session_state.auto_hum}%</strong> humidity &nbsp;|&nbsp;
-        🌧️ <strong>{st.session_state.auto_rain} mm</strong> annual rain
+        <p style="margin:4px 0 0; font-size:12px; color:#888">
+        ℹ️ {st.session_state.location_note}
         </p>
-        <p style="margin:4px 0 0 0; font-size:11px; color:#888">
-        Based on 10-year historical averages (2014-2023) • Values auto-filled below
+        <p style="margin:6px 0 0; font-size:13px; color:#555">
+        🌡️ <strong>{st.session_state.auto_temp}°C</strong> &nbsp;|&nbsp;
+        💧 <strong>{st.session_state.auto_hum}%</strong> &nbsp;|&nbsp;
+        🌧️ <strong>{st.session_state.auto_rain}mm</strong>
+        </p>
+        <p style="margin:4px 0 0; font-size:11px; color:#aaa">
+        10-year averages (2014-2023) • Values auto-filled below ↓
         </p></div>
         """, unsafe_allow_html=True)
 
