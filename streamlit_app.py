@@ -762,7 +762,7 @@ with left:
 
     loc3, loc4 = st.columns([3, 1])
     with loc3:
-        village = st.text_input("🏘️ Enter Village / Town Name", placeholder="e.g. Bheemavaram, Kodad...")
+        village = st.text_input("🏘️ Enter Village / Town Name", placeholder="e.g. Kodad, Suryapet, Miryalaguda, Nalgonda...")
     with loc4:
         st.markdown("<br>", unsafe_allow_html=True)
         fetch_btn = st.button("🌤️ Fetch", use_container_width=True)
